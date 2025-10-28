@@ -92,7 +92,7 @@ Download the Qwen3-4B-Instruct GGUF we ship our prompts with and point `SUMMARY_
 mkdir -p models/summary
 cd models/summary
 # Qwen 3 4B Instruct (2025-07) quantised to q6_k_m
-wget https://huggingface.co/Mungert/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-q6_k_m.gguf
+wget https://huggingface.co/Mungert/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-q4_k_m.gguf
 cd -
 ```
 Adjust the path in your environment variables if you store the file elsewhere.
@@ -116,7 +116,7 @@ We provide both a CLI app and a GUI app based on [Gradio](https://www.gradio.app
 1. Export the required environment variables (or place them in `.env` as shown above):
    ```bash
    export SERPER_API_KEY=<your_serper_api_key>
-   export SUMMARY_GGUF_PATH=./models/summary/Qwen3-4B-Instruct-2507-q6_k_m.gguf
+   export SUMMARY_GGUF_PATH=./models/summary/Qwen3-4B-Instruct-2507-q4_k_m.gguf
    # Optional performance tweaks
    export SUMMARY_THREADS=2
    export SUMMARY_GPU_LAYERS=16
@@ -137,8 +137,12 @@ We provide both a CLI app and a GUI app based on [Gradio](https://www.gradio.app
 
 We provide both a single-query mode and an interactive mode to use the CLI app.
 ```
-python cli_app.py            # interactive mode
-python cli_app.py --question "<QUERY>"  # single query
+   python cli_app.py --serving-mode llamacpp \
+     --model-path ./models/pokee/pokee_research_7b-q4_k_m.gguf \
+     --llama-threads 2    # interactive mode
+   python cli_app.py --serving-mode llamacpp \
+     --model-path ./models/pokee/pokee_research_7b-q4_k_m.gguf \
+     --llama-threads 2 --question "<QUERY>"  # single query
 ```
 Some additional options include
 - `--verbose`  print the intermediate steps

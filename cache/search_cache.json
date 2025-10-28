@@ -1,0 +1,84 @@
+{
+  "54ebfa995e0e32367381cea982a5eef661138cb38cc22fb12db91a8559779ba4": {
+    "result": {
+      "query": "readyforquantum.com",
+      "url_items": [
+        {
+          "url": "https://azure.microsoft.com/en-us/blog/quantum/2025/01/14/2025-the-year-to-become-quantum-ready/",
+          "title": "2025: The year to become Quantum-Ready - Microsoft Azure",
+          "description": "The United Nations announced 2025 as the International Year of Quantum Science and Technology (IYQ), reflecting the transformative impact quantum mechanics has ..."
+        },
+        {
+          "url": "https://quantum.microsoft.com/en-us/quantum-ready/get-started",
+          "title": "Quantum Ready | Get Started",
+          "description": "Join Microsoft's quantum ready program to assess quantum's impact, define a quantum-ready strategy, and execute a quantum application roadmap."
+        },
+        {
+          "url": "https://cloudsecurityalliance.org/blog/2024/07/03/quantum-readiness-importance-a-comprehensive-guide",
+          "title": "Quantum Readiness Importance: A Comprehensive Guide | CSA",
+          "description": "Knowing your cryptographic landscape is a critical step in becoming quantum-ready. The transition to quantum-resistant solutions is not just ..."
+        },
+        {
+          "url": "https://arxiv.org/abs/2509.01731",
+          "title": "Are Enterprises Ready for Quantum-Safe Cybersecurity? - arXiv",
+          "description": "Abstract:Quantum computing threatens to undermine classical cryptography by breaking widely deployed encryption and signature schemes."
+        },
+        {
+          "url": "https://fedscoop.com/microsoft-aims-quantum-ready-systems-products-2033-pqc/",
+          "title": "Microsoft aims for quantum-ready systems, products by 2033",
+          "description": "Microsoft plans to complete its transition to quantum-ready cryptographic standards by 2033, with early adoption of those capabilities in 2029, ..."
+        },
+        {
+          "url": "https://cmr.berkeley.edu/2025/07/are-businesses-ready-for-practical-quantum-computing/",
+          "title": "Are Businesses Ready for Practical Quantum Computing?",
+          "description": "Why forward-looking companies must prepare now for quantum computing that could redefine the boundaries of competitive advantage."
+        },
+        {
+          "url": "https://www.reddit.com/r/QuantumComputing/comments/1nx8235/are_businesses_actually_preparing_for_quantumera/",
+          "title": "Are businesses actually preparing for quantum-era cybersecurity ...",
+          "description": "Quantum-resistant encryption is expected to be broken and require continuous updating. Quantum Key Distribution is susceptible to denial-of- ..."
+        },
+        {
+          "url": "https://www.keyfactor.com/blog/what-does-quantum-ready-mean/",
+          "title": "What Does 'Quantum Ready' Mean? - Keyfactor",
+          "description": "Get ahead! Learn what it means to be quantum-ready, the risks of quantum computing, and how to secure your business for the future."
+        },
+        {
+          "url": "https://virtualizationreview.com/articles/2025/10/23/quantum-computing-is-coming-for-your-data-are-you-ready.aspx",
+          "title": "Quantum Computing Is Coming for Your Data -- Are You Ready?",
+          "description": "Quantum algorithms create procedures that allow a quantum computer to perform this amplification across many qubits. IBM, Google, Microsoft and ..."
+        },
+        {
+          "url": "https://www.akamai.com/blog/security/taking-steps-to-prepare-for-quantum-advantage",
+          "title": "Taking Steps to Prepare for Quantum Advantage - Akamai",
+          "description": "Read how Akamai is preparing for the implementation of post-quantum cryptography and helping our customers be quantum-ready."
+        }
+      ],
+      "raw_response": "{\"searchParameters\":{\"q\":\"readyforquantum.com\",\"type\":\"search\",\"num\":10,\"location\":\"United States\",\"engine\":\"google\",\"gl\":\"us\"},\"searchInformation\":{\"showingResultsFor\":\"ready for quantum\"},\"organic\":[{\"title\":\"2025: The year to become Quantum-Ready - Microsoft Azure\",\"link\":\"https://azure.microsoft.com/en-us/blog/quantum/2025/01/14/2025-the-year-to-become-quantum-ready/\",\"snippet\":\"The United Nations announced 2025 as the International Year of Quantum Science and Technology (IYQ), reflecting th",
+      "success": true,
+      "metadata": {
+        "provider": "serper",
+        "status": 200,
+        "execution_time": 0.7540000000000191,
+        "total_results": 10,
+        "searchParameters": {
+          "q": "readyforquantum.com",
+          "type": "search",
+          "num": 10,
+          "location": "United States",
+          "engine": "google",
+          "gl": "us"
+        },
+        "credits": 1
+      },
+      "error": ""
+    },
+    "query": "readyforquantum.com",
+    "config": {
+      "timeout": 30,
+      "top_k": 10,
+      "max_concurrent_requests": 300
+    },
+    "cached_at": "2025-10-28T00:57:11.011248"
+  }
+}
