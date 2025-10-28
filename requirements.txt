@@ -10,3 +10,4 @@ omegaconf
 pydantic
 ray
 filelock
+verl
