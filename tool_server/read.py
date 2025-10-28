@@ -32,7 +32,12 @@ except ImportError as exc:  # pragma: no cover - informative error
     ) from exc
 
 from logging_utils import setup_colored_logger
-from tool_server.utils import _is_valid_url, get_retry_delay, llm_summary
+from tool_server.utils import (
+    SUMMARY_N_CTX,
+    _is_valid_url,
+    get_retry_delay,
+    llm_summary,
+)
 
 load_dotenv()
 
@@ -317,6 +322,25 @@ async def local_read(url: str, timeout: int = 30) -> ReadResult:
         status, final_url, html_text, headers = await _fetch_html(url, timeout)
         execution_time = loop.time() - start_time
 
+        content_type = headers.get("Content-Type", "").lower()
+        if "application/pdf" in content_type:
+            logger.warning(f"Unsupported content type for summariser: {content_type} ({url})")
+            return ReadResult(
+                success=False,
+                content="",
+                url_items=[],
+                raw_response=html_text[:500],
+                metadata={
+                    "source": "local_reader",
+                    "url": url,
+                    "final_url": final_url,
+                    "status": status,
+                    "execution_time": execution_time,
+                    "content_type": content_type,
+                },
+                error=f"Unsupported content type: {content_type or 'unknown'}",
+            )
+
         if status != 200 or not html_text.strip():
             logger.warning(
                 f"Read failed for '{url}' with HTTP status {status}"
@@ -341,6 +365,13 @@ async def local_read(url: str, timeout: int = 30) -> ReadResult:
         base_url = final_url or url
         converter = HTMLToMarkdownConverter(base_url=base_url)
         markdown_content = converter.convert(soup)
+
+        max_chars = max(0, (SUMMARY_N_CTX - 1024) * 4)
+        if max_chars and len(markdown_content) > max_chars:
+            logger.warning(
+                f"Truncating content for '{url}' from {len(markdown_content)} to {max_chars} chars to respect context window"
+            )
+            markdown_content = markdown_content[:max_chars]
 
         url_items, total_links = _extract_links(soup, base_url)
 

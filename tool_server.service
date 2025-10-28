@@ -1,0 +1,21 @@
+[Unit]
+Description=Pokee Research Tool Server
+After=network.target
+
+[Service]
+# Adjust paths to match your install
+WorkingDirectory=/home/mahadeva/code/PokeeResearchOSS
+EnvironmentFile=/home/mahadeva/code/PokeeResearchOSS/.env
+ExecStart=/home/mahadeva/code/PokeeResearchOSS/.venv/bin/python \
+    start_tool_server.py --enable-cache --port 8888
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+# Log to a file similar to your nohup setup
+StandardOutput=append:/home/mahadeva/code/PokeeResearchOSS/tool_server.log
+StandardError=append:/home/mahadeva/code/PokeeResearchOSS/tool_server.log
+
+[Install]
+WantedBy=multi-user.target
+
