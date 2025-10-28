@@ -218,7 +218,7 @@ def get_tool_server_status() -> dict:
     return {"running": False, "message": "Tool server not responding"}
 
 
-def save_api_keys(serper_key: str, jina_key: str, gemini_key: str) -> str:
+def save_api_keys(serper_key: str) -> str:
     """Save API keys to environment variables.
 
     Validates that all keys are provided and stores them in the current process
@@ -226,31 +226,19 @@ def save_api_keys(serper_key: str, jina_key: str, gemini_key: str) -> str:
 
     Args:
         serper_key: Serper API key for web search functionality
-        jina_key: Jina AI API key for web content reading
-        gemini_key: Gemini API key for content summarization
 
     Returns:
         str: Status message for UI display (includes ✅/❌ emoji)
     """
     try:
         # Validate that all keys are provided
-        if not all([serper_key, jina_key, gemini_key]):
-            return "❌ Please provide all API keys"
+        if not serper_key:
+            return "❌ Please provide the Serper API key"
 
-        # Set environment variables
-        if serper_key:
-            os.environ["SERPER_API_KEY"] = serper_key.strip()
-            logger.info("✅ Serper API key configured")
+        os.environ["SERPER_API_KEY"] = serper_key.strip()
+        logger.info("✅ Serper API key configured")
 
-        if jina_key:
-            os.environ["JINA_API_KEY"] = jina_key.strip()
-            logger.info("✅ Jina AI API key configured")
-
-        if gemini_key:
-            os.environ["GEMINI_API_KEY"] = gemini_key.strip()
-            logger.info("✅ Gemini API key configured")
-
-        return "✅ API keys saved successfully! You can now start the tool server."
+        return "✅ API key saved successfully! You can now start the tool server."
 
     except Exception as e:
         logger.error(f"Failed to save API keys: {e}")
@@ -289,7 +277,7 @@ def start_tool_server_ui(port: int) -> tuple[str, str]:
     tool_server_port = port
 
     # Check if API keys are configured
-    required_keys = ["SERPER_API_KEY", "JINA_API_KEY", "GEMINI_API_KEY"]
+    required_keys = ["SERPER_API_KEY"]
     missing_keys = [key for key in required_keys if not os.environ.get(key)]
 
     if missing_keys:
@@ -608,8 +596,9 @@ def create_demo():
                 
                 ### Required API Keys:
                 - **Serper API**: For web search functionality ([Get key](https://serper.dev))
-                - **Jina AI API**: For web content reading ([Get key](https://jina.ai))
-                - **Gemini API**: For read content summarization with Gemini 2.5 Flash Lite ([Get key](https://aistudio.google.com/app/apikey))
+                - **Local Summarizer**: Runs Qwen3-4B-Instruct locally for page summarisation (no external key needed)
+
+                The HTML-to-Markdown reader now runs locally and does not require an external API key.
                 """
             )
 
@@ -622,20 +611,6 @@ def create_demo():
                         placeholder="Enter your Serper API key...",
                         type="password",
                         value=os.environ.get("SERPER_API_KEY", ""),
-                    )
-
-                    jina_input = gr.Textbox(
-                        label="Jina AI API Key",
-                        placeholder="Enter your Jina AI API key...",
-                        type="password",
-                        value=os.environ.get("JINA_API_KEY", ""),
-                    )
-
-                    gemini_input = gr.Textbox(
-                        label="Gemini API Key",
-                        placeholder="Enter your Gemini API key...",
-                        type="password",
-                        value=os.environ.get("GEMINI_API_KEY", ""),
                     )
 
                     save_keys_btn = gr.Button(
@@ -782,7 +757,7 @@ def create_demo():
         # Event handlers for Setup tab
         save_keys_btn.click(
             fn=save_api_keys,
-            inputs=[serper_input, jina_input, gemini_input],
+            inputs=[serper_input],
             outputs=[save_status],
         )
 

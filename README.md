@@ -41,132 +41,124 @@ Pokee's state-of-the-art 7B DeepResearch Agent that leverages web search and con
 
 ## 📋 Requirements
 
-### Hardware
-- **Compute Node**: We tested the code on a single 80GB A100 GPU (GPUs with less memory may also work, though we have not tested them). Using multiple GPUs can further accelerate inference. For reference, the driver version is 570.133.20 and the CUDA toolkit version is 12.8.
-
 ### Software
-- **Docker**: Environment to run the code will be provided as a docker image.
+- Python 3.10 or newer with `pip`
+- Git (for cloning this repository and submodules)
+- `llama-cpp-python` (installed during setup)
+- Optional: CUDA-enabled PyTorch if you plan to run training/evaluation scripts with Transformers
+
+### Hardware
+- CPU with AVX2 support (required by llama.cpp)
+- Optional NVIDIA GPU for faster inference or training workloads
 
 ### API Keys
 You will need the following API keys:
 - **Serper API**: For web search functionality
-- **Jina API**: For web content reading and extraction
-- **Gemini API**: For content summarization and result evaluation
-- **HuggingFace Token**: For downloading the model from HuggingFace
+- *(Optional)* **Gemini API**: Only if you intend to run the reward evaluation / training pipeline that still relies on Gemini judges
+
 
 ## 🛠️ Quick Start
 
-### 1. Environment Setup
-We provide a Docker image for easy deployment:
+### 1. Clone & Environment Setup
 ```bash
-docker pull verlai/verl:app-verl0.5-transformers4.55.4-sglang0.4.10.post2-mcore0.13.0-te2.2
-docker create --runtime=nvidia --gpus all --net=host --shm-size="80g"  -v .:/workspace/ --name pokeeresearch verlai/verl:app-verl0.5-transformers4.55.4-sglang0.4.10.post2-mcore0.13.0-te2.2 sleep infinity
-docker start pokeeresearch
-docker exec -it pokeeresearch  bash
-ssh-keygen -t ed25519 -C <USER_NAME>
-# copy /root/.ssh/id_ed25519.pub to github ssh keys
-git clone git@github.com:Pokee-AI/PokeeResearchOSS.git --recursive
+git clone https://github.com/Pokee-AI/PokeeResearchOSS.git
 cd PokeeResearchOSS
-pip install colorlog
-pip install -U google-genai
-hf auth login # enter your huggingface token, the tokens needs to have permission to use Pokee AI's models
-cd verl
-pip install -e .
-cd ..
+
+# (Recommended) create an isolated environment
+python3 -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
+
 
 Create a `.env` file in the project root and add your API keys:
 ```bash
 SERPER_API_KEY=your_serper_api_key_here
-JINA_API_KEY=your_jina_api_key_here
-GEMINI_API_KEY=your_gemini_api_key_here
+SUMMARY_GGUF_PATH=./models/summary/Qwen3-4B-Instruct-2507-q6_k_m.gguf
+# Optional: only needed for reward evaluation
+# GEMINI_API_KEY=your_gemini_api_key_here
+# Optional overrides for the local summariser
+# SUMMARY_THREADS=8
+# SUMMARY_GPU_LAYERS=16
+# SUMMARY_MAX_NEW_TOKENS=512
+# SUMMARY_N_CTX=32768
 ```
 
-### 2. Modify ```run.sh``` to use more than one GPUs (optional)
-Running the experiment with more GPUs is faster. By default the experiment uses one GPU.
-If you want to use more GPUs, simply modify 
+### 1a. Prepare the summariser GGUF
+Download the Qwen3-4B-Instruct GGUF we ship our prompts with and point `SUMMARY_GGUF_PATH` to it:
 ```bash
-trainer.n_gpus_per_node=1 \
+mkdir -p models/summary
+cd models/summary
+# Qwen 3 4B Instruct (2025-07) quantised to q6_k_m
+wget https://huggingface.co/Mungert/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-q6_k_m.gguf
+cd -
 ```
-in ```run.sh``` to 
+Adjust the path in your environment variables if you store the file elsewhere.
+
+### 1b. Download the PokeeResearch-7B GGUF (for llama.cpp serving)
 ```bash
-trainer.n_gpus_per_node=<NUM_GPUS_TO_USE> \
+mkdir -p models/pokee
+cd models/pokee
+# PokeeResearch 7B quantised to q4_k_m
+wget https://huggingface.co/Mungert/pokee_research_7b-GGUF/resolve/main/pokee_research_7b-q4_k_m.gguf
+cd -
 ```
-### 3. Run Benchmark Evaluation
+Use the downloaded file when launching the CLI with `--model-path`.
 
-**Step 1: Start the Tool Server**
-```bash
-python start_tool_server.py \
---port <PORT_NUMBER> \ # to specify the port to listen to (default 8888)
---enable-cache # to enable caching tool results (recommended to save api credits)
-```
-
-**Step 2: Run the Evaluation**
-
-Start a new terminal, then run the experiment.
-```bash
-docker exec -it pokeeresearch bash
-cd PokeeResearchOSS
-bash run.sh
-```
-
-**Evaluation Details:**
-- **Dataset Size**: 1,228 questions with ground truth answers
-- **Evaluation Runs**: 4 samples per question
-- **Metrics**: Mean accuracy across all responses
-- **Judge Model**: Gemini-2.5-Flash-lite
-- **Runtime**: 40-50 minutes on 8 × A100 80GB GPUs
-
-### 4. View Results
-Detailed results are available in the `val_results/` directory:
-- Original questions and ground truth answers
-- Agent's complete research trajectory
-- Judge's evaluation decisions and reasoning
-
-### 5. Research Threads Synthesis
-Users may synthesize the research threads saved in `val_results/`. To do so, replace `xxxx.json` in `run_rts.sh` by the result json file in `val_results/`.
-Then run `bash run_rts.sh`.
-
-### 6. Launch the Deep Research Agent App
+### 2. Launch the Deep Research Agent App
 We provide both a CLI app and a GUI app based on [Gradio](https://www.gradio.app/).
-Both apps support serving the LLM locally or via [vLLM](https://docs.vllm.ai/en/latest/index.html).
-#### vLLM Serving
-In order to use vLLM serving, new dependencies are needed that would change the existing packages. Therefore, we recommend creating a new docker container and redo installation as in step 1. After starting and enter this new container, do:
-```bash
-# We recommend using uv for installing vLLM. Consult https://docs.vllm.ai/en/latest/getting_started/installation/index.html for alternatives.
-uv pip install vllm --torch-backend=auto --system
-uv pip install httpx[http2] --system
-```
-Then, launch the vLLM server by running  `bash serve_model.sh`.
-
 #### CLI App
 > ❗️
-> You need to start the tool server first before using the CLI app. To do so, run `python start_tool_server.py --enable-cache`.
+> Before the CLI can answer questions you must (1) set the required environment variables and (2) start the tool server.
+
+1. Export the required environment variables (or place them in `.env` as shown above):
+   ```bash
+   export SERPER_API_KEY=<your_serper_api_key>
+   export SUMMARY_GGUF_PATH=./models/summary/Qwen3-4B-Instruct-2507-q6_k_m.gguf
+   # Optional performance tweaks
+   export SUMMARY_THREADS=2
+   export SUMMARY_GPU_LAYERS=16
+   ```
+2. Launch the tool server (choose a port if the default 8888 is taken):
+   ```bash
+   python start_tool_server.py --enable-cache --port 8888
+   ```
+   Leave this process running; the CLI reads the port from `.server_port` automatically.
+3. In a new terminal, run the CLI with llama.cpp:
+   ```bash
+   python cli_app.py --serving-mode llamacpp \
+     --model-path ./models/pokee/pokee_research_7b-q4_k_m.gguf \
+     --llama-threads 2
+   ```
+
+   *Summaries are generated locally via llama.cpp using your `SUMMARY_GGUF_PATH`. Adjust behaviour with `SUMMARY_THREADS`, `SUMMARY_GPU_LAYERS`, `SUMMARY_MAX_NEW_TOKENS`, and `SUMMARY_N_CTX` as needed.*
 
 We provide both a single-query mode and an interactive mode to use the CLI app.
 ```
-python cli_app.py # interactive mode that keeps listening to queries until terminated by user
-python cli_app.py --question <QUERY> # single-query mode that terminates after responding
+python cli_app.py            # interactive mode
+python cli_app.py --question "<QUERY>"  # single query
 ```
 Some additional options include
 - `--verbose`  print the intermediate steps
-- `--serving-mode` specify the model serving mode (local or vllm, default is local)
 - `--max-turns` set the max number of turns (default 10)
+You can also tweak llama.cpp-specific flags such as `--llama-n-ctx`, `--llama-gpu-layers`, or `--llama-max-new-tokens` for your hardware.
 
 #### GUI App
 First, you need to install Gradio.
 ```bash
-uv pip install --upgrade gradio --system
+pip install --upgrade gradio
 ```
 You don't need to launch a tool server in advance like in the CLI app. 
 You will configure the credentials and start the tool server using the GUI once it's up.
 Then, the app will spawn a tool server as a subprocess.
 Launch the GUI app with
 ```bash
-python gradio_app.py
+python gradio_app.py --serving-mode llamacpp
 ```
 Some additional options include
-- `--serving-mode` specify the model serving mode (local or vllm, default is local)
+- `--serving-mode` specify the model serving mode (set to `llamacpp` unless you re-enable the Transformers backend)
 -  `--port` specify the port the Gradio app runs on
 
 ## 📊 Benchmark Dataset

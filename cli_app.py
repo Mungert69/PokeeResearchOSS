@@ -17,11 +17,16 @@ Deep Research Agent - User Interface
 This script provides a simple CLI interface to interact with the trained deep research agent.
 """
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import time
 
-import torch
+try:
+    import torch
+except ImportError:
+    torch = None
 
 from logging_utils import setup_colored_logger
 
@@ -80,6 +85,14 @@ def interactive_mode(
     top_p: float,
     verbose: bool,
     vllm_url: str = None,
+    llama_n_ctx: int = 32768,
+    llama_threads: int | None = None,
+    llama_gpu_layers: int = 0,
+    llama_rope_base: float | None = None,
+    llama_rope_scale: float | None = None,
+    llama_max_new_tokens: int = 2048,
+    llama_seed: int | None = None,
+    llama_verbose: bool = False,
 ):
     """Run interactive mode."""
     # Create agent based on type
@@ -94,6 +107,23 @@ def interactive_mode(
             model_name=model_path,
             tool_config_path=tool_config_path,
             max_turns=max_turns,
+        )
+    elif serving_mode == "llamacpp":
+        from agent.llamacpp_agent import LlamaCPPDeepResearchAgent
+
+        logger.info("Using llama.cpp agent")
+        agent = LlamaCPPDeepResearchAgent(
+            model_path=model_path,
+            tool_config_path=tool_config_path,
+            max_turns=max_turns,
+            n_ctx=llama_n_ctx,
+            n_threads=llama_threads,
+            n_gpu_layers=llama_gpu_layers,
+            rope_frequency_base=llama_rope_base,
+            rope_frequency_scale=llama_rope_scale,
+            max_new_tokens=llama_max_new_tokens,
+            seed=llama_seed,
+            verbose=llama_verbose,
         )
     else:
         from agent.simple_agent import SimpleDeepResearchAgent
@@ -129,6 +159,14 @@ def single_query_mode(
     top_p: float,
     verbose: bool,
     vllm_url: str = None,
+    llama_n_ctx: int = 32768,
+    llama_threads: int | None = None,
+    llama_gpu_layers: int = 0,
+    llama_rope_base: float | None = None,
+    llama_rope_scale: float | None = None,
+    llama_max_new_tokens: int = 2048,
+    llama_seed: int | None = None,
+    llama_verbose: bool = False,
 ) -> str:
     """Run single query."""
     # Create agent based on type
@@ -143,6 +181,23 @@ def single_query_mode(
             model_name=model_path,
             tool_config_path=tool_config_path,
             max_turns=max_turns,
+        )
+    elif serving_mode == "llamacpp":
+        from agent.llamacpp_agent import LlamaCPPDeepResearchAgent
+
+        logger.info("Using llama.cpp agent")
+        agent = LlamaCPPDeepResearchAgent(
+            model_path=model_path,
+            tool_config_path=tool_config_path,
+            max_turns=max_turns,
+            n_ctx=llama_n_ctx,
+            n_threads=llama_threads,
+            n_gpu_layers=llama_gpu_layers,
+            rope_frequency_base=llama_rope_base,
+            rope_frequency_scale=llama_rope_scale,
+            max_new_tokens=llama_max_new_tokens,
+            seed=llama_seed,
+            verbose=llama_verbose,
         )
     else:
         from agent.simple_agent import SimpleDeepResearchAgent
@@ -195,9 +250,12 @@ Examples:
     parser.add_argument(
         "--serving-mode",
         type=str,
-        choices=["local", "vllm"],
+        choices=["local", "vllm", "llamacpp"],
         default="local",
-        help="Serving mode to use: 'local' for local model loading, 'vllm' for VLLM server",
+        help=(
+            "Serving mode to use: 'local' for transformers, 'vllm' for VLLM server, "
+            "'llamacpp' for llama.cpp GGUF models"
+        ),
     )
     parser.add_argument(
         "--vllm-url",
@@ -223,11 +281,12 @@ Examples:
         default=None,
         help="Single question to answer (non-interactive mode)",
     )
+    default_device = "cpu"
     parser.add_argument(
         "--device",
         type=str,
-        default="cuda" if torch.cuda.is_available() else "cpu",
-        help="Device to use (cuda/cpu) - only used with local agent",
+        default=default_device,
+        help="Device to use for the local Transformers backend (default: cpu)",
     )
     parser.add_argument(
         "--max-turns", type=int, default=10, help="Maximum number of agent turns"
@@ -239,6 +298,54 @@ Examples:
         "--top-p", type=float, default=0.9, help="Nucleus sampling parameter"
     )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+
+    parser.add_argument(
+        "--llama-n-ctx",
+        type=int,
+        default=32768,
+        help="Context window size for llama.cpp (default: 32768)",
+    )
+    parser.add_argument(
+        "--llama-threads",
+        type=int,
+        default=None,
+        help="Number of CPU threads for llama.cpp (default: auto)",
+    )
+    parser.add_argument(
+        "--llama-gpu-layers",
+        type=int,
+        default=0,
+        help="Number of layers to offload to GPU for llama.cpp",
+    )
+    parser.add_argument(
+        "--llama-rope-base",
+        type=float,
+        default=None,
+        help="Optional RoPE frequency base override for llama.cpp",
+    )
+    parser.add_argument(
+        "--llama-rope-scale",
+        type=float,
+        default=None,
+        help="Optional RoPE frequency scale override for llama.cpp",
+    )
+    parser.add_argument(
+        "--llama-max-new-tokens",
+        type=int,
+        default=2048,
+        help="Max new tokens to generate with llama.cpp (default: 2048)",
+    )
+    parser.add_argument(
+        "--llama-seed",
+        type=int,
+        default=None,
+        help="Random seed for llama.cpp sampling (default: random)",
+    )
+    parser.add_argument(
+        "--llama-verbose",
+        action="store_true",
+        help="Enable verbose llama.cpp logging",
+    )
 
     args = parser.parse_args()
 
@@ -259,6 +366,14 @@ Examples:
             top_p=args.top_p,
             verbose=args.verbose,
             vllm_url=args.vllm_url,
+            llama_n_ctx=args.llama_n_ctx,
+            llama_threads=args.llama_threads,
+            llama_gpu_layers=args.llama_gpu_layers,
+            llama_rope_base=args.llama_rope_base,
+            llama_rope_scale=args.llama_rope_scale,
+            llama_max_new_tokens=args.llama_max_new_tokens,
+            llama_seed=args.llama_seed,
+            llama_verbose=args.llama_verbose,
         )
         print(f"\nQuestion: {args.question}")
         print(f"\nAnswer: {answer}\n")
@@ -274,6 +389,14 @@ Examples:
             top_p=args.top_p,
             verbose=args.verbose,
             vllm_url=args.vllm_url,
+            llama_n_ctx=args.llama_n_ctx,
+            llama_threads=args.llama_threads,
+            llama_gpu_layers=args.llama_gpu_layers,
+            llama_rope_base=args.llama_rope_base,
+            llama_rope_scale=args.llama_rope_scale,
+            llama_max_new_tokens=args.llama_max_new_tokens,
+            llama_seed=args.llama_seed,
+            llama_verbose=args.llama_verbose,
         )
 
 

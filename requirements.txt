@@ -1,0 +1,11 @@
+colorlog
+python-dotenv
+beautifulsoup4
+llama-cpp-python
+requests
+aiohttp
+fastapi
+uvicorn[standard]
+omegaconf
+pydantic
+ray

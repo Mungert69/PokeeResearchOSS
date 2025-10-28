@@ -18,19 +18,29 @@ import asyncio
 import logging
 import os
 import re
+import threading
+from functools import partial
 from typing import Optional
 
 from dotenv import load_dotenv
-from google import genai
-from google.genai.types import GenerateContentConfig
+from llama_cpp import Llama
 from pydantic import BaseModel
 
+from agent.chat_template import render_qwen_chat
 from logging_utils import setup_colored_logger
 
 load_dotenv()
 
 
 logger = setup_colored_logger(__name__, level=logging.INFO)
+SUMMARY_GGUF_PATH = os.getenv("SUMMARY_GGUF_PATH")
+SUMMARY_N_CTX = int(os.getenv("SUMMARY_N_CTX", "32768"))
+SUMMARY_THREADS = os.getenv("SUMMARY_THREADS")
+SUMMARY_GPU_LAYERS = int(os.getenv("SUMMARY_GPU_LAYERS", "0"))
+SUMMARY_VERBOSE = os.getenv("SUMMARY_VERBOSE", "0").lower() in {"1", "true", "yes"}
+SUMMARY_MAX_NEW_TOKENS = int(os.getenv("SUMMARY_MAX_NEW_TOKENS", "512"))
+SUMMARY_TEMPERATURE = float(os.getenv("SUMMARY_TEMPERATURE", "0.1"))
+SUMMARY_TOP_P = float(os.getenv("SUMMARY_TOP_P", "0.9"))
 
 
 def _is_valid_url(url: str) -> bool:
@@ -101,20 +111,112 @@ def _is_valid_url(url: str) -> bool:
 
 
 logger = setup_colored_logger(__name__, level=logging.INFO)
-_genai_client = None
+_summary_model = None
+_summary_model_lock = threading.Lock()
 
 
-def get_genai_client():
-    """Get or create the global GenAI client instance."""
-    global _genai_client
-    if _genai_client is None:
-        api_key = os.getenv("GEMINI_API_KEY")
-        if api_key:
-            _genai_client = genai.Client(api_key=api_key)
-        else:
-            _genai_client = genai.Client()
-    assert _genai_client is not None, "GenAI client initialization failed"
-    return _genai_client
+class LlamaCppSummarizer:
+    """Summariser backed by llama.cpp running a Qwen3 GGUF checkpoint."""
+
+    def __init__(
+        self,
+        model_path: str,
+        n_ctx: int,
+        n_threads: Optional[int],
+        n_gpu_layers: int,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+        verbose: bool = False,
+    ):
+        if not model_path:
+            raise ValueError(
+                "SUMMARY_GGUF_PATH is not set. Please point it to a Qwen3-4B GGUF file."
+            )
+
+        self.model_path = model_path
+        self.n_ctx = n_ctx
+        self.n_threads = n_threads
+        self.n_gpu_layers = n_gpu_layers
+        self.max_new_tokens = max_new_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.verbose = verbose
+
+        logger.info(
+            "Loading summary GGUF model from '%s' (ctx=%d, threads=%s, gpu_layers=%d)...",
+            self.model_path,
+            self.n_ctx,
+            self.n_threads if self.n_threads is not None else "auto",
+            self.n_gpu_layers,
+        )
+
+        self.llama = Llama(
+            model_path=self.model_path,
+            n_ctx=self.n_ctx,
+            n_threads=self.n_threads,
+            n_gpu_layers=self.n_gpu_layers,
+            verbose=self.verbose,
+        )
+        self.stop_tokens = ["<|im_end|>", "<|im_start|>user", "<|im_start|>assistant"]
+        self._generate_lock = threading.Lock()
+        logger.info("Summary GGUF model loaded successfully.")
+
+    def summarize(self, question: str, content: str) -> str:
+        """Synchronously generate a question-conditioned summary."""
+        messages = [
+            {"role": "system", "content": SYSTEM_INSTRUCTION},
+            {
+                "role": "user",
+                "content": f"<question>{question}</question>\n<content>{content}</content>",
+            },
+        ]
+        prompt = render_qwen_chat(messages, add_generation_prompt=True)
+
+        with self._generate_lock:
+            output = self.llama(
+                prompt=prompt,
+                max_tokens=self.max_new_tokens,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                stop=self.stop_tokens,
+            )
+
+        choices = output.get("choices", [])
+        if not choices:
+            return ""
+
+        text = choices[0].get("text", "")
+        return text.strip()
+
+
+def _parse_threads(value: Optional[str]) -> Optional[int]:
+    if value is None or value.strip() == "":
+        return None
+    try:
+        threads = int(value)
+        return threads if threads > 0 else None
+    except ValueError:
+        logger.warning("Invalid SUMMARY_THREADS value '%s', using auto.", value)
+        return None
+
+
+def get_summary_model() -> LlamaCppSummarizer:
+    global _summary_model
+    if _summary_model is None:
+        with _summary_model_lock:
+            if _summary_model is None:
+                _summary_model = LlamaCppSummarizer(
+                    model_path=SUMMARY_GGUF_PATH,
+                    n_ctx=SUMMARY_N_CTX,
+                    n_threads=_parse_threads(SUMMARY_THREADS),
+                    n_gpu_layers=SUMMARY_GPU_LAYERS,
+                    max_new_tokens=SUMMARY_MAX_NEW_TOKENS,
+                    temperature=SUMMARY_TEMPERATURE,
+                    top_p=SUMMARY_TOP_P,
+                    verbose=SUMMARY_VERBOSE,
+                )
+    return _summary_model
 
 
 def extract_retry_delay_from_error(error_str: str) -> Optional[float]:
@@ -177,9 +279,6 @@ Important note: Use the same language as the user's main question for the summar
 
 Now think and extract the information that could help answer the question."""
 
-MODEL = "gemini-2.5-flash-lite"
-
-
 class LLMSummaryResult(BaseModel):
     """Result from LLM summarization attempt."""
 
@@ -189,270 +288,38 @@ class LLMSummaryResult(BaseModel):
     recoverable: bool = False  # Whether the error is recoverable by retrying
 
 
-async def llm_summary(
-    user_prompt: str,
-    client: genai.Client,
-    timeout: float = 30.0,
-    model: str = MODEL,
-) -> LLMSummaryResult:
+async def llm_summary(question: str, content: str) -> LLMSummaryResult:
     """
-    Generate a summary using LLM with robust error handling.
-
-    Args:
-        user_prompt: The prompt to send to the LLM
-        client: The GenAI client instance
-        timeout: Request timeout in seconds (default: 30.0)
-        model: Model to use for generation (default: MODEL constant)
-
-    Returns:
-        LLMSummaryResult with success status, text, and error information
-
-    Recoverable errors (worth retrying):
-        - RESOURCE_EXHAUSTED (rate limiting)
-        - Timeout errors
-        - Transient network errors (503, 502, connection errors)
-        - Internal server errors (500)
-
-    Non-recoverable errors (not worth retrying):
-        - Content blocked by safety filters
-        - Empty or invalid prompts
-        - Authentication errors (401, 403)
-        - Invalid request errors (400)
-        - Empty responses (likely a consistent issue)
+    Generate a question-conditioned summary using the local Qwen model.
     """
-
-    def _normalize_enum(value) -> str:
-        """Normalize enum values to uppercase string names."""
-        if value is None:
-            return ""
-        name = getattr(value, "name", None)
-        if name:
-            return name.upper()
-        value_str = str(value)
-        if "." in value_str:
-            value_str = value_str.split(".")[-1]
-        return value_str.upper()
-
-    def _detect_block(response) -> Optional[str]:
-        """
-        Detect if response was blocked by safety filters.
-
-        Returns:
-            Block reason string if blocked, None otherwise
-        """
-        # Check prompt-level blocking first
-        prompt_feedback = getattr(response, "prompt_feedback", None)
-        if prompt_feedback:
-            block_reason = _normalize_enum(
-                getattr(prompt_feedback, "block_reason", None)
-            )
-            if block_reason and block_reason not in {
-                "",
-                "BLOCK_REASON_UNSPECIFIED",
-                "UNSPECIFIED",
-            }:
-                logger.debug(f"Prompt blocked: {block_reason}")
-                return f"PROMPT_{block_reason}"
-
-            # Check prompt safety ratings
-            for rating in getattr(prompt_feedback, "safety_ratings", []) or []:
-                if getattr(rating, "blocked", False):
-                    category = _normalize_enum(getattr(rating, "category", None))
-                    logger.debug(f"Prompt safety block: {category}")
-                    return f"PROMPT_{category or 'SAFETY_BLOCKED'}"
-
-        # Check candidate-level blocking
-        for candidate in getattr(response, "candidates", []) or []:
-            finish_reason = _normalize_enum(getattr(candidate, "finish_reason", None))
-            if finish_reason in {"SAFETY", "RECITATION", "OTHER"}:
-                logger.debug(f"Candidate finish reason: {finish_reason}")
-                return finish_reason
-
-            # Check candidate safety ratings
-            for rating in getattr(candidate, "safety_ratings", []) or []:
-                if getattr(rating, "blocked", False):
-                    category = _normalize_enum(getattr(rating, "category", None))
-                    logger.debug(f"Candidate safety block: {category}")
-                    return category or "SAFETY_BLOCKED"
-
-        return None
-
-    def _extract_text_from_candidate(candidate) -> str:
-        """Extract text content from a candidate response."""
-        content = getattr(candidate, "content", None)
-        parts = getattr(content, "parts", None)
-        if parts is None and isinstance(content, list):
-            parts = content
-        if not parts:
-            return ""
-
-        chunks: list[str] = []
-        for part in parts:
-            part_text = getattr(part, "text", None)
-            if part_text is None and isinstance(part, dict):
-                part_text = part.get("text")
-            if part_text:
-                chunks.append(part_text)
-        return "\n".join(chunks).strip()
-
-    def _is_recoverable_error(error_msg: str) -> bool:
-        """Check if an error is recoverable by retrying."""
-        error_lower = error_msg.lower()
-
-        # Recoverable patterns
-        recoverable_patterns = [
-            "resource_exhausted",  # Rate limiting
-            "429",  # Too Many Requests
-            "503",  # Service Unavailable
-            "502",  # Bad Gateway
-            "500",  # Internal Server Error (may be transient)
-            "timeout",
-            "timed out",
-            "connection",
-            "network",
-            "temporary",
-            "transient",
-            "unavailable",
-            "overloaded",
-            "retrydelay",
-        ]
-
-        # Non-recoverable patterns
-        non_recoverable_patterns = [
-            "401",  # Unauthorized
-            "403",  # Forbidden
-            "400",  # Bad Request
-            "invalid",
-            "authentication",
-            "permission",
-            "quota exceeded",  # Different from rate limit - permanent quota issue
-            "blocked",
-            "safety",
-        ]
-
-        # Check non-recoverable first (higher priority)
-        if any(pattern in error_lower for pattern in non_recoverable_patterns):
-            return False
-
-        # Check recoverable patterns
-        if any(pattern in error_lower for pattern in recoverable_patterns):
-            return True
-
-        # Default: not recoverable for unknown errors
-        return False
-
-    # Input validation - NOT RECOVERABLE
-    if not user_prompt or not user_prompt.strip():
-        logger.warning("Empty or whitespace-only prompt provided to llm_summary")
-        return LLMSummaryResult(
-            success=False,
-            text="",
-            error="Empty or whitespace-only prompt",
-            recoverable=False,
-        )
-
-    original_length = len(user_prompt)
-    MAX_PROMPT_LENGTH = 1_000_000  # 1MB limit
-
-    if original_length > MAX_PROMPT_LENGTH:
-        logger.warning(
-            f"Prompt too long ({original_length:,} chars), truncating to {MAX_PROMPT_LENGTH:,} chars"
-        )
-        user_prompt = user_prompt[:MAX_PROMPT_LENGTH]
+    model = get_summary_model()
+    loop = asyncio.get_running_loop()
 
     try:
-        # Make API request with timeout
-        response = await asyncio.wait_for(
-            client.aio.models.generate_content(
-                model=model,
-                contents=user_prompt,
-                config=GenerateContentConfig(
-                    response_modalities=["TEXT"],
-                    response_mime_type="text/plain",
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    max_output_tokens=2048,
-                    temperature=0.1,
-                ),
-            ),
-            timeout=timeout,
+        text = await loop.run_in_executor(
+            None, partial(model.summarize, question=question, content=content)
         )
-
-        # Check for safety blocks - NOT RECOVERABLE
-        blocked_reason = _detect_block(response)
-        if blocked_reason:
-            error_msg = f"Content blocked by safety filters: {blocked_reason}"
-            logger.info(error_msg)
-            return LLMSummaryResult(
-                success=False,
-                text="",
-                error=error_msg,
-                recoverable=False,
-            )
-
-        # Try to extract text using standard method
-        text = getattr(response, "text", None)
-
-        # Fallback: manually extract from candidates
-        if text is None:
-            for candidate in getattr(response, "candidates", []) or []:
-                text = _extract_text_from_candidate(candidate)
-                if text:
-                    break
-
-        # Validate extracted text - NOT RECOVERABLE
-        if text is None:
-            logger.warning("No text in response")
-            return LLMSummaryResult(
-                success=False,
-                text="",
-                error="No text in response",
-                recoverable=False,
-            )
-
-        text = text.strip()
-        if not text:
-            logger.warning("LLM returned empty text response")
-            return LLMSummaryResult(
-                success=False,
-                text="",
-                error="Empty text response",
-                recoverable=False,
-            )
-
-        if len(text) < 10:
-            logger.warning(
-                f"LLM returned very short response ({len(text)} chars): '{text}'"
-            )
-
-        logger.info(
-            f"LLM summary successful, "
-            f"input: {original_length:,} chars, output: {len(text):,} chars"
-        )
-        return LLMSummaryResult(success=True, text=text, recoverable=False)
-
-    except asyncio.TimeoutError:
-        # RECOVERABLE - might succeed with retry
-        error_msg = f"Request timed out after {timeout}s"
-        logger.warning(error_msg)
+        if text:
+            return LLMSummaryResult(success=True, text=text)
         return LLMSummaryResult(
             success=False,
             text="",
-            error=error_msg,
-            recoverable=True,
+            error="Model returned empty summary",
+            recoverable=False,
         )
-
+    except RuntimeError as e:
+        logger.error(f"LLM summary OOM/runtime error: {e}")
+        return LLMSummaryResult(
+            success=False,
+            text="",
+            error=str(e)[:200],
+            recoverable=False,
+        )
     except Exception as e:
-        error_msg = str(e)
-        is_recoverable = _is_recoverable_error(error_msg)
-
-        if is_recoverable:
-            logger.warning(f"Recoverable LLM error: {e}")
-        else:
-            logger.error(f"Non-recoverable LLM error: {e}", exc_info=True)
-
+        logger.error(f"LLM summary failed: {e}", exc_info=True)
         return LLMSummaryResult(
             success=False,
             text="",
-            error=error_msg,
-            recoverable=is_recoverable,
+            error=str(e)[:200],
+            recoverable=False,
         )

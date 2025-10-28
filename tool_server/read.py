@@ -14,21 +14,25 @@
 
 
 import asyncio
-import json
-import os
-from typing import Any, Dict, List
+import re
+from html import unescape
+from typing import Any, Dict, List, Tuple
+from urllib.parse import urljoin, urldefrag
 
 import aiohttp
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
+try:
+    from bs4 import BeautifulSoup, NavigableString, Tag
+except ImportError as exc:  # pragma: no cover - informative error
+    raise ImportError(
+        "beautifulsoup4 is required for the local HTML reader. "
+        "Install it with `pip install beautifulsoup4`."
+    ) from exc
+
 from logging_utils import setup_colored_logger
-from tool_server.utils import (
-    _is_valid_url,
-    get_genai_client,
-    get_retry_delay,
-    llm_summary,
-)
+from tool_server.utils import _is_valid_url, get_retry_delay, llm_summary
 
 load_dotenv()
 
@@ -72,143 +76,318 @@ class ReadResult(BaseModel):
     error: str = ""
 
 
-async def jina_read(url: str, timeout: int = 30) -> ReadResult:
-    """
-    Read and extract content from a webpage using Jina Reader API.
+class HTMLToMarkdownConverter:
+    """Convert HTML content to Markdown with basic structural fidelity."""
 
-    Args:
-        url: The URL of the webpage to read
-        timeout: Maximum time in seconds to wait (default: 30)
+    _INLINE_TAGS = {"span", "em", "i", "strong", "b", "a", "code", "kbd", "mark"}
+    _SKIP_TAGS = {"script", "style", "noscript", "iframe", "canvas", "svg"}
 
-    Returns:
-        ReadResult containing extracted content, links, and metadata
+    def __init__(self, base_url: str):
+        self.base_url = base_url
 
-    Example:
-        >>> result = await jina_read("https://example.com")
-        >>> if result.success:
-        ...     print(result.content)
-        ...     for item in result.url_items:
-        ...         print(f"{item.title}: {item.url}")
-    """
-    api_key = os.getenv("JINA_API_KEY")
+    def convert(self, soup: BeautifulSoup) -> str:
+        body = soup.body or soup
+        markdown = self._convert_children(body).strip()
+        markdown = re.sub(r"\n{3,}", "\n\n", markdown)
+        markdown = re.sub(r"[ \t]+\n", "\n", markdown)
+        return markdown.strip()
 
-    if not api_key:
-        return ReadResult(
-            success=False,
-            content="",
-            metadata={
-                "source": "jina_reader",
-                "url": url,
-                "status": 401,
-                "execution_time": 0.0,
-                "links_found": 0,
-                "relevant_links": 0,
-            },
-            error="JINA_API_KEY environment variable not found",
-        )
+    def _convert_children(self, node: Tag, indent: str = "") -> str:
+        parts: List[str] = []
+        for child in node.children:
+            part = self._convert_node(child, indent)
+            if part:
+                parts.append(part)
+        return "".join(parts)
 
-    reader_url = f"https://r.jina.ai/{url}"
+    def _convert_node(self, node, indent: str = "") -> str:
+        if isinstance(node, NavigableString):
+            text = unescape(str(node))
+            if not text.strip():
+                return ""
+            collapsed = re.sub(r"\s+", " ", text)
+            return collapsed
+
+        if not isinstance(node, Tag):
+            return ""
+
+        name = node.name.lower()
+        if name in self._SKIP_TAGS:
+            return ""
+
+        if name == "br":
+            return "\n"
+
+        if name in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+            level = int(name[1])
+            content = self._convert_children(node).strip()
+            if not content:
+                return ""
+            return f"\n{'#' * level} {content}\n\n"
+
+        if name == "p":
+            content = self._convert_children(node).strip()
+            if not content:
+                return ""
+            return f"\n{content}\n\n"
+
+        if name in {"strong", "b"}:
+            content = self._convert_children(node).strip()
+            return f"**{content}**" if content else ""
+
+        if name in {"em", "i"}:
+            content = self._convert_children(node).strip()
+            return f"*{content}*" if content else ""
+
+        if name == "code":
+            text = node.get_text()
+            if "\n" in text:
+                return f"\n```\n{text.rstrip()}\n```\n"
+            return f"`{text.strip()}`"
+
+        if name == "pre":
+            text = node.get_text()
+            language = ""
+            class_attr = node.get("class")
+            if isinstance(class_attr, list) and class_attr:
+                for item in class_attr:
+                    if item.startswith("language-"):
+                        language = item.split("language-", 1)[1]
+                        break
+            return f"\n```{language}\n{text.rstrip()}\n```\n"
+
+        if name == "ul":
+            return self._convert_list(node, indent, ordered=False)
+
+        if name == "ol":
+            return self._convert_list(node, indent, ordered=True)
+
+        if name == "li":
+            content = self._convert_children(node, indent + "  ").strip()
+            if not content:
+                return ""
+            bullet = f"{indent}- {content.replace(chr(10), chr(10) + indent + '  ')}\n"
+            return bullet
+
+        if name == "a":
+            href = node.get("href")
+            text = self._convert_children(node).strip() or href or ""
+            if not href:
+                return text
+            href = urljoin(self.base_url, href)
+            return f"[{text}]({href})" if text else href
+
+        if name == "img":
+            alt = node.get("alt", "").strip()
+            src = node.get("src")
+            if not src:
+                return ""
+            src = urljoin(self.base_url, src)
+            return f"![{alt}]({src})"
+
+        if name == "blockquote":
+            content = self._convert_children(node).strip()
+            if not content:
+                return ""
+            quoted = "\n".join(
+                f"> {line}" if line.strip() else ">"
+                for line in content.splitlines()
+            )
+            return f"\n{quoted}\n\n"
+
+        if name == "table":
+            return self._convert_table(node)
+
+        if name in {"thead", "tbody"}:
+            return self._convert_children(node, indent)
+
+        return self._convert_children(node, indent)
+
+    def _convert_list(self, node: Tag, indent: str, ordered: bool) -> str:
+        lines: List[str] = []
+        for idx, li in enumerate(node.find_all("li", recursive=False), start=1):
+            marker = f"{indent}{idx}. " if ordered else f"{indent}- "
+            content = self._convert_children(li, indent + ("   " if ordered else "  ")).strip()
+            if not content:
+                continue
+            formatted = content.replace("\n", f"\n{indent}{'   ' if ordered else '  '}")
+            lines.append(marker + formatted)
+        if not lines:
+            return ""
+        return "\n".join(lines) + "\n"
+
+    def _convert_table(self, node: Tag) -> str:
+        rows: List[List[str]] = []
+        for tr in node.find_all("tr"):
+            row: List[str] = []
+            for cell in tr.find_all(["th", "td"]):
+                text = cell.get_text(" ", strip=True)
+                text = re.sub(r"\s+", " ", text)
+                row.append(text)
+            if row:
+                rows.append(row)
+
+        if not rows:
+            return ""
+
+        column_count = max(len(row) for row in rows)
+        normalized_rows = [
+            row + [""] * (column_count - len(row)) for row in rows
+        ]
+
+        header = normalized_rows[0]
+        separators = ["---"] * column_count
+        lines = [
+            "| " + " | ".join(header) + " |",
+            "| " + " | ".join(separators) + " |",
+        ]
+        for row in normalized_rows[1:]:
+            lines.append("| " + " | ".join(row) + " |")
+        return "\n".join(lines) + "\n\n"
+
+
+async def _fetch_html(url: str, timeout: int) -> Tuple[int, str, str, Dict[str, str]]:
     headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "application/json",
-        "X-Return-Format": "text",
-        "X-With-Links-Summary": "true",
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
     }
 
+    async with aiohttp.ClientSession(headers=headers) as session:
+        async with session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+            allow_redirects=True,
+        ) as response:
+            status = response.status
+            final_url = str(response.url)
+            text = await response.text(errors="ignore")
+            return status, final_url, text, dict(response.headers)
+
+
+def _extract_links(
+    soup: BeautifulSoup, base_url: str
+) -> Tuple[List[ReadURLItem], int]:
+    url_items: List[ReadURLItem] = []
+    seen: set[str] = set()
+    total_links = 0
+
+    for anchor in soup.find_all("a"):
+        href = anchor.get("href")
+        if not href:
+            continue
+        total_links += 1
+        absolute = urljoin(base_url, href.strip())
+        absolute, _ = urldefrag(absolute)
+
+        if absolute in seen:
+            continue
+        if not _is_valid_url(absolute):
+            continue
+
+        title = anchor.get_text(" ", strip=True) or absolute
+        title = re.sub(r"\s+", " ", title).strip()
+
+        url_items.append(ReadURLItem(url=absolute, title=title[:256]))
+        seen.add(absolute)
+
+    return url_items, total_links
+
+
+def _clean_html(html_text: str) -> BeautifulSoup:
+    soup = BeautifulSoup(html_text, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    return soup
+
+
+async def local_read(url: str, timeout: int = 30) -> ReadResult:
+    """
+    Read and extract content from a webpage using a local HTML-to-Markdown
+    converter (no external API calls).
+    """
     loop = asyncio.get_running_loop()
     start_time = loop.time()
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                reader_url,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=timeout),
-            ) as response:
-                execution_time = loop.time() - start_time
+        status, final_url, html_text, headers = await _fetch_html(url, timeout)
+        execution_time = loop.time() - start_time
 
-                if response.status == 200:
-                    data = await response.json()
-                    raw_response = await response.text()
+        if status != 200 or not html_text.strip():
+            logger.warning(
+                f"Read failed for '{url}' with HTTP status {status}"
+            )
+            return ReadResult(
+                success=False,
+                content="",
+                url_items=[],
+                raw_response=html_text[:500],
+                metadata={
+                    "source": "local_reader",
+                    "url": url,
+                    "status": status,
+                    "execution_time": execution_time,
+                    "links_found": 0,
+                    "relevant_links": 0,
+                },
+                error=f"HTTP {status}: unable to fetch content",
+            )
 
-                    content = data.get("data", {}).get("text", "")
-                    links_data = data.get("data", {}).get("links", {})
+        soup = _clean_html(html_text)
+        base_url = final_url or url
+        converter = HTMLToMarkdownConverter(base_url=base_url)
+        markdown_content = converter.convert(soup)
 
-                    # Process links into ReadURLItem objects
-                    url_items = []
-                    for link_title, link_url in links_data.items():
-                        if not link_url or not isinstance(link_url, str):
-                            continue
+        url_items, total_links = _extract_links(soup, base_url)
 
-                        link_url = link_url.strip()
-                        link_title = link_title.strip() if link_title else "No Title"
+        title = ""
+        if soup.title and soup.title.string:
+            title = soup.title.string.strip()
+        elif soup.find("h1"):
+            title = soup.find("h1").get_text(" ", strip=True)
 
-                        if link_url and _is_valid_url(link_url):
-                            url_items.append(
-                                ReadURLItem(url=link_url, title=link_title)
-                            )
+        metadata = {
+            "source": "local_reader",
+            "url": url,
+            "final_url": final_url,
+            "status": status,
+            "title": title,
+            "execution_time": execution_time,
+            "links_found": total_links,
+            "relevant_links": len(url_items),
+            "content_length": len(markdown_content),
+            "headers": {k: headers.get(k, "") for k in ("Content-Type", "Content-Length")},
+        }
 
-                    metadata = {
-                        "source": "jina_reader",
-                        "url": url,
-                        "status": 200,
-                        "title": data.get("data", {}).get("title", ""),
-                        "description": data.get("data", {}).get("description", ""),
-                        "links_found": len(links_data),
-                        "relevant_links": len(url_items),
-                        "execution_time": execution_time,
-                    }
+        logger.info(
+            f"Successfully read '{url}', converted to markdown ({len(markdown_content)} chars)"
+        )
 
-                    if "usage" in data.get("data", {}):
-                        metadata["usage"] = data["data"]["usage"]
-                    if "usage" in data.get("meta", {}):
-                        metadata["meta_usage"] = data["meta"]["usage"]
-
-                    logger.info(
-                        f"Successfully read '{url}', found {len(url_items)} relevant links"
-                    )
-
-                    return ReadResult(
-                        success=True,
-                        content=content,
-                        url_items=url_items,
-                        raw_response=raw_response[:500],
-                        metadata=metadata,
-                    )
-
-                else:
-                    error_text = await response.text()
-                    logger.warning(
-                        f"Read failed with HTTP {response.status}: {error_text[:100]}"
-                    )
-                    return ReadResult(
-                        success=False,
-                        content="",
-                        url_items=[],
-                        raw_response=error_text[:500],
-                        metadata={
-                            "source": "jina_reader",
-                            "url": url,
-                            "status": response.status,
-                            "execution_time": execution_time,
-                            "links_found": 0,
-                            "relevant_links": 0,
-                        },
-                        error=f"HTTP {response.status}: {error_text[:200]}",
-                    )
+        return ReadResult(
+            success=True,
+            content=markdown_content,
+            url_items=url_items,
+            raw_response=html_text[:500],
+            metadata=metadata,
+        )
 
     except asyncio.TimeoutError:
-        logger.warning(f"Read request timed out after {timeout}s")
+        execution_time = loop.time() - start_time
+        logger.warning(f"Read request for '{url}' timed out after {timeout}s")
         return ReadResult(
             success=False,
             content="",
             url_items=[],
             raw_response="Request timed out",
             metadata={
-                "source": "jina_reader",
+                "source": "local_reader",
                 "url": url,
                 "status": 408,
-                "execution_time": loop.time() - start_time,
+                "execution_time": execution_time,
                 "links_found": 0,
                 "relevant_links": 0,
             },
@@ -216,53 +395,37 @@ async def jina_read(url: str, timeout: int = 30) -> ReadResult:
         )
 
     except aiohttp.ClientError as e:
-        logger.warning(f"Client error during read: {str(e)}")
+        execution_time = loop.time() - start_time
+        logger.warning(f"Client error during read for '{url}': {str(e)}")
         return ReadResult(
             success=False,
             content="",
             url_items=[],
             raw_response=str(e)[:500],
             metadata={
-                "source": "jina_reader",
+                "source": "local_reader",
                 "url": url,
                 "status": 502,
-                "execution_time": loop.time() - start_time,
+                "execution_time": execution_time,
                 "links_found": 0,
                 "relevant_links": 0,
             },
             error=f"Client error: {str(e)[:200]}",
         )
 
-    except json.JSONDecodeError as e:
-        logger.warning(f"Failed to parse JSON response: {e}")
-        return ReadResult(
-            success=False,
-            content="",
-            url_items=[],
-            raw_response="Invalid JSON response",
-            metadata={
-                "source": "jina_reader",
-                "url": url,
-                "status": 502,
-                "execution_time": loop.time() - start_time,
-                "links_found": 0,
-                "relevant_links": 0,
-            },
-            error=f"Failed to parse JSON response: {str(e)[:200]}",
-        )
-
     except Exception as e:
-        logger.error(f"Unexpected error during read: {str(e)}")
+        execution_time = loop.time() - start_time
+        logger.error(f"Unexpected error during read for '{url}': {str(e)}", exc_info=True)
         return ReadResult(
             success=False,
             content="",
             url_items=[],
             raw_response=str(e)[:500],
             metadata={
-                "source": "jina_reader",
+                "source": "local_reader",
                 "url": url,
                 "status": 500,
-                "execution_time": loop.time() - start_time,
+                "execution_time": execution_time,
                 "links_found": 0,
                 "relevant_links": 0,
             },
@@ -290,7 +453,6 @@ class WebReadAgent:
                 - max_summary_words: Max words for fallback summary (default: 2048)
                 - max_summary_retries: Max retries for LLM (default: 3)
         """
-        self.client = get_genai_client()
         self._timeout = config.get("timeout", 30)
         self._semaphore = asyncio.Semaphore(config.get("max_concurrent_requests", 500))
         self.max_content_words = config.get("max_content_words", 10000)
@@ -320,7 +482,7 @@ class WebReadAgent:
         Read a webpage and generate a summary based on the question.
 
         This method:
-        1. Reads webpage content using Jina API
+        1. Reads webpage content via local HTML fetch + Markdown conversion
         2. Truncates content if too long
         3. Generates LLM summary with up to 3 retries for recoverable errors
         4. Falls back to truncated content if LLM fails
@@ -343,7 +505,7 @@ class WebReadAgent:
 
         try:
             async with self._semaphore:
-                result = await jina_read(url.strip(), timeout=self._timeout)
+                result = await local_read(url.strip(), timeout=self._timeout)
 
             if not result.success:
                 logger.warning(
@@ -370,8 +532,8 @@ class WebReadAgent:
             # Generate summary with retry logic
             for attempt in range(self.max_summary_retries):
                 summary_result = await llm_summary(
-                    user_prompt=f"<question>{question}</question><content>{result.content}</content>",
-                    client=self.client,
+                    question=question,
+                    content=result.content,
                 )
 
                 if summary_result.success:
@@ -417,7 +579,7 @@ class WebReadAgent:
                 url_items=[],
                 raw_response="",
                 metadata={
-                    "source": "jina_reader",
+                    "source": "local_reader",
                     "url": url,
                     "status": 500,
                     "execution_time": 0.0,
