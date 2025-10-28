@@ -76,7 +76,7 @@ python -m pip install -r requirements.txt
 Create a `.env` file in the project root and add your API keys:
 ```bash
 SERPER_API_KEY=your_serper_api_key_here
-SUMMARY_GGUF_PATH=./models/summary/Qwen3-4B-Instruct-2507-q6_k_m.gguf
+SUMMARY_GGUF_PATH=./models/summary/Qwen3-4B-Instruct-2507-q4_k_m.gguf
 # Optional: only needed for reward evaluation
 # GEMINI_API_KEY=your_gemini_api_key_here
 # Optional overrides for the local summariser
@@ -91,7 +91,7 @@ Download the Qwen3-4B-Instruct GGUF we ship our prompts with and point `SUMMARY_
 ```bash
 mkdir -p models/summary
 cd models/summary
-# Qwen 3 4B Instruct (2025-07) quantised to q6_k_m
+# Qwen 3 4B Instruct (2025-07) quantised to q4_k_m
 wget https://huggingface.co/Mungert/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-q4_k_m.gguf
 cd -
 ```
