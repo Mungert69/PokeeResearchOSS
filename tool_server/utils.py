@@ -24,6 +24,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from llama_cpp import Llama
+from shared_llama_lock import llama_cpp_lock
 from pydantic import BaseModel
 
 from agent.chat_template import render_qwen_chat
@@ -174,13 +175,14 @@ class LlamaCppSummarizer:
         prompt = render_qwen_chat(messages, add_generation_prompt=True)
 
         with self._generate_lock:
-            output = self.llama(
-                prompt=prompt,
-                max_tokens=self.max_new_tokens,
-                temperature=self.temperature,
-                top_p=self.top_p,
-                stop=self.stop_tokens,
-            )
+            with llama_cpp_lock():
+                output = self.llama(
+                    prompt=prompt,
+                    max_tokens=self.max_new_tokens,
+                    temperature=self.temperature,
+                    top_p=self.top_p,
+                    stop=self.stop_tokens,
+                )
 
         choices = output.get("choices", [])
         if not choices:

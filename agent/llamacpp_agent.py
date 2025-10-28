@@ -13,6 +13,7 @@ import threading
 from typing import Optional
 
 from agent.base_agent import BaseDeepResearchAgent
+from shared_llama_lock import llama_cpp_lock
 from agent.chat_template import render_qwen_chat
 from logging_utils import setup_colored_logger
 
@@ -129,13 +130,14 @@ class LlamaCPPDeepResearchAgent(BaseDeepResearchAgent):
 
         stop_tokens = ["<|im_end|>", "<|im_start|>user", "<|im_start|>assistant"]
 
-        result = self.llama(
-            prompt=prompt,
-            max_tokens=self.max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            stop=stop_tokens,
-        )
+        with llama_cpp_lock():
+            result = self.llama(
+                prompt=prompt,
+                max_tokens=self.max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stop=stop_tokens,
+            )
 
         choices = result.get("choices", [])
         if not choices:
