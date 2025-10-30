@@ -61,7 +61,7 @@ You will need the following API keys:
 
 ### 1. Clone & Environment Setup
 ```bash
-git clone https://github.com/Pokee-AI/PokeeResearchOSS.git
+git clone git@github.com:Mungert69/PokeeResearchOSS.git
 cd PokeeResearchOSS
 
 # (Recommended) create an isolated environment
